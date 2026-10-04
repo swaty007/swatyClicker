@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from myclicker.domain.model import Key, MethodInfo, MouseButton, Point
+from myclicker.domain.model import ClickTiming, Key, MethodInfo, MouseButton, Point
 
 
 class InputMethod(ABC):
@@ -17,8 +17,9 @@ class InputMethod(ABC):
 
 class MouseInputMethod(InputMethod):
     @abstractmethod
-    def click(self, window, point: Point, button: MouseButton, double: bool) -> None:
-        """Deliver one (or a double) Mouse Click at `point` in the client area of `window`."""
+    def click(self, window, point: Point, button: MouseButton, double: bool, timing: ClickTiming) -> None:
+        """Deliver one (or a double) Mouse Click at `point` in the client area of `window`,
+        waiting `timing.hover` after moving onto the point and holding the button `timing.hold`."""
 
 
 class KeyboardInputMethod(InputMethod):

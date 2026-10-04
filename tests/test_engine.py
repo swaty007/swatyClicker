@@ -1,7 +1,7 @@
 import unittest
 
 from myclicker.domain.engine import ActionState, Engine
-from myclicker.domain.model import Action, Key, KeyTarget, MouseButton, MouseTarget, Point, Profile, Schedule
+from myclicker.domain.model import Action, ClickTiming, Key, KeyTarget, MouseButton, MouseTarget, Point, Profile, Schedule
 from tests.fakes import FakeKeyboard, FakeMouse, FakeWindow, FakeWindowFinder
 
 
@@ -26,6 +26,16 @@ class EngineTest(unittest.TestCase):
             self.engine.tick(now)
 
         self.assertEqual(self.mouse.clicks, [(self.window, Point(10, 20), MouseButton.LEFT, False)] * 2)
+
+    def test_click_timing_of_the_action_reaches_the_input_method(self):
+        action = mouse_action()
+        action.target.timing = ClickTiming(hover=0.25, hold=0.1)
+        self.engine.bind(Profile(name="BD", actions=[action]), self.window)
+
+        self.engine.start(now=0.0)
+        self.engine.tick(0.0)
+
+        self.assertEqual(self.mouse.timings, [ClickTiming(hover=0.25, hold=0.1)])
 
     def test_jitter_shifts_each_delay(self):
         engine = Engine(methods=[self.mouse], finder=self.finder, rng=FixedRng(0.5))

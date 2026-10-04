@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Optional
 
 from myclicker.domain.input import KeyboardInputMethod, MouseInputMethod
-from myclicker.domain.model import Key, MethodInfo, MouseButton, Point
+from myclicker.domain.model import ClickTiming, Key, MethodInfo, MouseButton, Point
 from myclicker.platform_win import api
 from myclicker.platform_win.api import user32
 from myclicker.platform_win.mouse import _absolute
@@ -117,15 +117,15 @@ class InterceptionMouse(MouseInputMethod):
     def available(self):
         return self._driver.check(keyboards=False)
 
-    def click(self, window, point: Point, button: MouseButton, double: bool) -> None:
+    def click(self, window, point: Point, button: MouseButton, double: bool, timing: ClickTiming) -> None:
         down, up = _MOUSE_STATES[button]
         with foreground(window):
             ax, ay = _absolute(window.client_to_screen(point))
             self._driver.send(False, _MouseStroke(0, _MOUSE_ABSOLUTE_VIRTUAL, 0, ax, ay, 0))
-            time.sleep(0.05)
+            time.sleep(timing.hover)
             for _ in range(2 if double else 1):
                 self._driver.send(False, _MouseStroke(down, _MOUSE_ABSOLUTE_VIRTUAL, 0, ax, ay, 0))
-                time.sleep(HOLD)
+                time.sleep(timing.hold)
                 self._driver.send(False, _MouseStroke(up, _MOUSE_ABSOLUTE_VIRTUAL, 0, ax, ay, 0))
 
 
@@ -158,7 +158,7 @@ class ArduinoHidMouse(MouseInputMethod):
     def available(self):
         return False, _ARDUINO_TODO
 
-    def click(self, window, point, button, double):
+    def click(self, window, point, button, double, timing):
         raise NotImplementedError(_ARDUINO_TODO)
 
 

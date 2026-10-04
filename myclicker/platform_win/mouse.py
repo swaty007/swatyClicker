@@ -5,13 +5,10 @@ import ctypes
 import time
 
 from myclicker.domain.input import MouseInputMethod
-from myclicker.domain.model import MethodInfo, MouseButton, Point
+from myclicker.domain.model import ClickTiming, MethodInfo, MouseButton, Point
 from myclicker.platform_win import api
 from myclicker.platform_win.api import user32
 from myclicker.platform_win.windows import deepest_child_at, foreground
-
-HOLD = 0.06          # seconds between button down and up
-SETTLE = 0.05        # seconds after moving the cursor before pressing
 
 # button -> (down msg, up msg, double-click msg, MK_* flag)
 _MESSAGES = {
@@ -33,16 +30,18 @@ class _WindowMessageMouse(MouseInputMethod):
     def _send(self, hwnd: int, msg: int, wparam: int, lparam: int) -> None:
         raise NotImplementedError
 
-    def click(self, window, point: Point, button: MouseButton, double: bool) -> None:
+    def click(self, window, point: Point, button: MouseButton, double: bool, timing: ClickTiming) -> None:
         hwnd, local = deepest_child_at(window.hwnd, point)
         lparam = api.make_lparam(local.x, local.y)
         down, up, dblclk, mk = _MESSAGES[button]
         self._send(hwnd, api.WM_MOUSEMOVE, 0, lparam)
+        time.sleep(timing.hover)      # let the game notice the cursor is over the button first
         self._send(hwnd, down, mk, lparam)
-        time.sleep(HOLD)
+        time.sleep(timing.hold)
         self._send(hwnd, up, 0, lparam)
         if double:
             self._send(hwnd, dblclk, mk, lparam)
+            time.sleep(timing.hold)
             self._send(hwnd, up, 0, lparam)
 
 
@@ -82,50 +81,53 @@ def _absolute(screen: Point) -> tuple[int, int]:
 class _ForegroundMouse(MouseInputMethod):
     """Emulates the real mouse: activates the window, moves the cursor, clicks, then restores both."""
 
-    def _press_release(self, screen: Point, down: int, up: int) -> None:
+    def _move(self, screen: Point) -> None:
         raise NotImplementedError
 
-    def click(self, window, point: Point, button: MouseButton, double: bool) -> None:
+    def _button(self, screen: Point, flag: int) -> None:
+        raise NotImplementedError
+
+    def click(self, window, point: Point, button: MouseButton, double: bool, timing: ClickTiming) -> None:
         down, up = _EVENT_FLAGS[button]
         with foreground(window):
             screen = window.client_to_screen(point)
+            self._move(screen)
+            time.sleep(timing.hover)
             for _ in range(2 if double else 1):
-                self._press_release(screen, down, up)
+                self._button(screen, down)
+                time.sleep(timing.hold)
+                self._button(screen, up)
 
 
 class SendInputAbsoluteMouse(_ForegroundMouse):
     info = MethodInfo("mouse.sendinput_abs", "SendInput (абсолютные координаты)", "mouse", needs_focus=True,
                       description="Движение и клик одним API SendInput по всему виртуальному рабочему столу.")
 
-    def _press_release(self, screen, down, up):
-        ax, ay = _absolute(screen)
-        base = api.MOUSEEVENTF_ABSOLUTE | api.MOUSEEVENTF_VIRTUALDESK
-        _send_mouse_input(ax, ay, base | api.MOUSEEVENTF_MOVE)
-        time.sleep(SETTLE)
-        _send_mouse_input(ax, ay, base | down)
-        time.sleep(HOLD)
-        _send_mouse_input(ax, ay, base | up)
+    def _move(self, screen):
+        _send_mouse_input(*_absolute(screen), api.MOUSEEVENTF_ABSOLUTE | api.MOUSEEVENTF_VIRTUALDESK
+                          | api.MOUSEEVENTF_MOVE)
+
+    def _button(self, screen, flag):
+        _send_mouse_input(*_absolute(screen), api.MOUSEEVENTF_ABSOLUTE | api.MOUSEEVENTF_VIRTUALDESK | flag)
 
 
 class SetCursorSendInputMouse(_ForegroundMouse):
     info = MethodInfo("mouse.setcursor_sendinput", "SetCursorPos + SendInput", "mouse", needs_focus=True,
                       description="Курсор ставится SetCursorPos, кнопка нажимается через SendInput.")
 
-    def _press_release(self, screen, down, up):
+    def _move(self, screen):
         user32.SetCursorPos(screen.x, screen.y)
-        time.sleep(SETTLE)
-        _send_mouse_input(0, 0, down)
-        time.sleep(HOLD)
-        _send_mouse_input(0, 0, up)
+
+    def _button(self, screen, flag):
+        _send_mouse_input(0, 0, flag)
 
 
 class MouseEventMouse(_ForegroundMouse):
     info = MethodInfo("mouse.mouse_event", "SetCursorPos + mouse_event", "mouse", needs_focus=True,
                       description="Устаревший API mouse_event (так работают многие старые автокликеры).")
 
-    def _press_release(self, screen, down, up):
+    def _move(self, screen):
         user32.SetCursorPos(screen.x, screen.y)
-        time.sleep(SETTLE)
-        user32.mouse_event(down, 0, 0, 0, 0)
-        time.sleep(HOLD)
-        user32.mouse_event(up, 0, 0, 0, 0)
+
+    def _button(self, screen, flag):
+        user32.mouse_event(flag, 0, 0, 0, 0)

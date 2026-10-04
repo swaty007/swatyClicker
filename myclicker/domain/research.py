@@ -4,12 +4,13 @@ from myclicker.domain.compatibility import Entry, Status
 LU4 = "LU4"
 
 BUILTIN_COMPATIBILITY = [
-    Entry(LU4, "mouse.postmessage", Status.WORKS,
-          "Клик по Game Macro (ячейка панели / окно Macro) — и в фоне. Окно в оконном режиме, не свёрнуто."),
-    Entry(LU4, "mouse.sendmessage", Status.UNTESTED,
-          "Кнопка интерфейса не нажалась (проверено только в безрамочном полноэкранном режиме)."),
+    Entry(LU4, "mouse.postmessage", Status.PARTIAL,
+          "Игровые действия (макросы, предметы) — только пока игрок сам двигает мышью над окном игры "
+          "(~40%, в пределах ~4 с); без живого ввода 0 из 12. Кнопки интерфейса (Party Matching) — нет."),
+    Entry(LU4, "mouse.sendmessage", Status.FAILS, "Кнопки интерфейса не нажимаются (0 из 3)."),
     Entry(LU4, "mouse.sendinput_abs", Status.PARTIAL,
-          "Game Macro и кнопки интерфейса — да; ячейка умения напрямую и клик по земле — нет. Нужен фокус."),
+          "Кнопки интерфейса — да (9 из 10 при паузе наведения 0,4 с). Игровые действия без живого ввода "
+          "игрока — нет. Нужен фокус."),
     Entry(LU4, "mouse.setcursor_sendinput", Status.PARTIAL, "Кнопки интерфейса — да; макросы не проверялись."),
     Entry(LU4, "mouse.mouse_event", Status.PARTIAL, "Кнопки интерфейса — да; макросы не проверялись."),
     Entry(LU4, "mouse.interception", Status.FAILS,

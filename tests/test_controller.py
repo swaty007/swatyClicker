@@ -3,7 +3,7 @@ import unittest
 from pathlib import Path
 
 from myclicker.app.controller import Controller, PlatformServices
-from myclicker.domain.model import Key, MouseTarget, Point
+from myclicker.domain.model import ClickTiming, Key, MouseTarget, Point
 from tests.fakes import FakeKeyboard, FakeMouse, FakeWindow, FakeWindowFinder, solid_image
 
 
@@ -40,6 +40,15 @@ class ControllerTest(unittest.TestCase):
         reloaded = self.make_controller().profile("BD")
         self.assertEqual([a.id for a in reloaded.actions], [action.id])
 
+    def test_captured_click_gets_default_timing_from_settings(self):
+        self.controller.settings.default_hover_delay = 0.2
+        self.controller.settings.default_hold = 0.09
+        self.controller.create_profile("BD")
+
+        action = self.controller.capture_mouse_action("BD")
+
+        self.assertEqual(action.target.timing, ClickTiming(hover=0.2, hold=0.09))
+
     def test_capture_over_another_window_is_rejected(self):
         self.controller.create_profile("BD")
         self.controller.bind_window("BD", self.bd)
@@ -71,6 +80,7 @@ class ControllerTest(unittest.TestCase):
         self.controller.test_action("BD", action.id, "mouse.postmessage")
 
         self.assertEqual(self.mouse.clicks, [(self.bd, Point(50, 60), action.target.button, False)])
+        self.assertEqual(self.mouse.timings, [action.target.timing])
 
     def test_profiles_are_created_with_unique_names(self):
         self.controller.create_profile("BD")

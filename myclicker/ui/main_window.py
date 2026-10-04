@@ -1,7 +1,9 @@
 """Main window: profiles on the left; tabs for mouse Actions, keyboard Actions, Input Methods and settings."""
 from __future__ import annotations
 
+import base64
 import os
+import re
 import tkinter as tk
 from tkinter import messagebox, simpledialog, ttk
 from typing import Callable, Optional
@@ -10,14 +12,21 @@ from myclicker.domain.compatibility import Status
 from myclicker.domain.engine import ActionState
 from myclicker.domain.keys import key_by_name, parse_hotkey
 from myclicker.domain.model import Action, KeyTarget, MouseTarget, Schedule
-from myclicker.ui.dialogs import ActionDialog
+from myclicker.persistence import png
+from myclicker.ui import method_docs
+from myclicker.ui.dialogs import ActionDialog, NoteDialog, Tooltip
+from myclicker.ui.rich_text import RichLabel, configure_code_tag, insert_marked
 from myclicker.ui.texts import BUTTONS, COMPAT, schedule_text, status_text
 
 
-def _tree(parent, columns: list[tuple[str, str, int]], height=12) -> ttk.Treeview:
+PREVIEW_ZOOM = 3   # Slot Fingerprint preview under the mouse table
+LARGE_ZOOM = 12    # the same picture opened in its own window
+
+
+def _tree(parent, columns: list[tuple[str, str, int]], height=12, show="headings") -> ttk.Treeview:
     frame = ttk.Frame(parent)
     frame.pack(fill="both", expand=True)
-    tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show="headings", height=height,
+    tree = ttk.Treeview(frame, columns=[c[0] for c in columns], show=show, height=height,
                         selectmode="browse")
     for column, title, width in columns:
         tree.heading(column, text=title)
@@ -27,6 +36,33 @@ def _tree(parent, columns: list[tuple[str, str, int]], height=12) -> ttk.Treevie
     tree.pack(side="left", fill="both", expand=True)
     scroll.pack(side="right", fill="y")
     return tree
+
+
+class TabBar(tk.Frame):
+    """Top menu of sections; the active one is clearly highlighted (ttk.Notebook tabs are hard to tell apart)."""
+    BG, IDLE, IDLE_HOVER, ACTIVE = "#24292f", "#24292f", "#32383f", "#0969da"
+
+    def __init__(self, parent, on_select: Callable[[str], None]):
+        super().__init__(parent, bg=self.BG)
+        self._on_select = on_select
+        self._buttons: dict[str, tk.Label] = {}
+        self._active = None
+
+    def add(self, title: str):
+        label = tk.Label(self, text=title, bg=self.IDLE, fg="#d0d7de", padx=18, pady=8, cursor="hand2",
+                         font=("Segoe UI", 10))
+        label.pack(side="left")
+        label.bind("<Button-1>", lambda e: self._on_select(title))
+        label.bind("<Enter>", lambda e: title != self._active and label.configure(bg=self.IDLE_HOVER))
+        label.bind("<Leave>", lambda e: title != self._active and label.configure(bg=self.IDLE))
+        self._buttons[title] = label
+
+    def set_active(self, title: str):
+        self._active = title
+        for name, label in self._buttons.items():
+            active = name == title
+            label.configure(bg=self.ACTIVE if active else self.IDLE, fg="white" if active else "#d0d7de",
+                            font=("Segoe UI", 10, "bold" if active else "normal"))
 
 
 class ProfilesPanel(ttk.LabelFrame):
@@ -41,7 +77,8 @@ class ProfilesPanel(ttk.LabelFrame):
             ttk.Button(buttons, text=text, command=command).pack(side="left", padx=(0, 4))
         bind = ttk.Frame(self)
         bind.pack(fill="x", pady=(6, 0))
-        self.bind_hint = ttk.Label(bind, wraplength=330, foreground="#57606a")
+        self.bind_hint = RichLabel(bind, lines=3)
+        self.bind_hint.configure(width=40)
         self.bind_hint.pack(fill="x")
         row = ttk.Frame(bind)
         row.pack(fill="x", pady=(4, 0))
@@ -65,8 +102,8 @@ class ProfilesPanel(ttk.LabelFrame):
             self.w.on_profile_selected(None)
 
     def refresh(self):
-        self.bind_hint.configure(text=f"Привязать окно: выберите профиль, наведите мышь на окно игры и нажмите "
-                                      f"{self.w.c.settings.hotkey_bind_window}")
+        self.bind_hint.set(f"Привязать окно: выберите профиль, наведите мышь на окно игры и нажмите "
+                           f"`{self.w.c.settings.hotkey_bind_window}`")
         for name in self.tree.get_children():
             window = self.w.c.bound_window(name)
             state = "—"
@@ -119,15 +156,31 @@ class ActionsTab(ttk.Frame):
         self.w, self.device = window, device
         self.target_type = MouseTarget if device == "mouse" else KeyTarget
         columns = [("on", "Вкл", 40), ("name", "Название", 130)]
-        columns += ([("point", "Точка", 80), ("button", "Кнопка", 70)] if device == "mouse"
+        columns += ([("point", "Точка", 80), ("button", "Кнопка", 70), ("hover", "Наведение", 75),
+                     ("hold", "Удержание", 75)] if device == "mouse"
                     else [("key", "Клавиша", 80)])
         columns += [("method", "Способ ввода", 170), ("interval", "Интервал", 80), ("status", "Статус", 200)]
-        self.hint = ttk.Label(self, foreground="#57606a", wraplength=700)
+        self.hint = RichLabel(self, lines=3)
         self.hint.pack(fill="x", pady=(0, 6))
+        # The bottom bar is packed before the table so a tall table can never push the buttons out of view.
+        bottom = ttk.Frame(self)
+        bottom.pack(side="bottom", fill="x", pady=(6, 0))
+        self._thumbs: dict[str, tuple[int, tk.PhotoImage]] = {}   # action id -> (fingerprint id, picture)
+        self.preview = None
+        if device == "mouse":
+            self.preview = tk.Label(bottom, text="нет\nотпечатка", width=10, height=3,
+                                    relief="solid", borderwidth=1, cursor="hand2", font=("Segoe UI", 8),
+                                    foreground="#57606a", background="#f6f8fa")
+            self.preview.pack(side="left", padx=(0, 10))
+            self.preview.bind("<Button-1>", lambda e: self.open_fingerprint())
         self.tree = _tree(self, columns)
         self.tree.bind("<Double-1>", lambda e: self.edit())
-        buttons = ttk.Frame(self)
-        buttons.pack(fill="x", pady=(6, 0))
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self._update_preview())
+        buttons = ttk.Frame(bottom)
+        buttons.pack(side="left", fill="x", anchor="center")
+        if device == "mouse":
+            ttk.Label(bottom, text="◀ отпечаток: клик — увеличить", foreground="#57606a").pack(
+                side="left", padx=(8, 0))
         commands = [("Изменить", self.edit), ("Удалить", self.remove), ("Вкл/Выкл", self.toggle),
                     ("Тест (1 раз)", self.test)]
         if device == "mouse":
@@ -156,18 +209,22 @@ class ActionsTab(ttk.Frame):
             self.tree.selection_set(current)
             self.tree.see(current)
         self._update_hint()
+        self._update_preview()
 
     def _update_hint(self):
         s = self.w.c.settings
         if not self.w.profile_name:
             text = "Создайте или выберите профиль слева."
         elif self.device == "mouse":
-            text = (f"Добавить клик: наведите мышь на ячейку с игровым макросом и нажмите {s.hotkey_capture}. "
-                    f"Профиль сам привяжется к этому окну. По умолчанию — фоновый PostMessage (работает в LU4).")
+            text = (f"Добавить клик: наведите мышь на ячейку с игровым макросом и нажмите `{s.hotkey_capture}`. "
+                    f"Профиль сам привяжется к этому окну. Старт/Стоп — `{s.hotkey_toggle}`. "
+                    f"По умолчанию — фоновый `PostMessage`. В LU4 игровые действия проходят только при живом "
+                    f"вводе игрока — см. «Способы ввода».")
         else:
-            text = ("Нажатия клавиш. В LU4 программные нажатия не доходят до игровых действий "
-                    "(см. вкладку «Способы ввода»), но в других программах могут работать.")
-        self.hint.configure(text=text)
+            text = (f"Нажатия клавиш: «Добавить» внизу. Старт/Стоп — `{s.hotkey_toggle}`. В LU4 программные "
+                    f"нажатия не доходят до игровых действий (см. «Способы ввода»), но в других программах "
+                    f"могут работать.")
+        self.hint.set(text)
 
     def _row(self, action: Action) -> tuple:
         target = action.target
@@ -177,7 +234,8 @@ class ActionsTab(ttk.Frame):
         head = ("✔" if action.enabled else "", action.name)
         if isinstance(target, MouseTarget):
             middle = (f"{target.point.x}, {target.point.y}",
-                      BUTTONS[target.button] + (" ×2" if target.double else ""))
+                      BUTTONS[target.button] + (" ×2" if target.double else ""),
+                      f"{target.timing.hover:g} с", f"{target.timing.hold:g} с")
         else:
             middle = (target.key.name,)
         return head + middle + (method_name, schedule_text(action.schedule), status)
@@ -189,6 +247,49 @@ class ActionsTab(ttk.Frame):
             return
         for action in self.actions():
             self.tree.item(action.id, values=self._row(action))
+        self._update_preview()
+
+    def _picture(self, action: Optional[Action], zoom: int):
+        """The action's Slot Fingerprint as a Tk picture enlarged `zoom` times, or None."""
+        if action is None or not isinstance(action.target, MouseTarget) or action.target.fingerprint is None:
+            return None
+        image = action.target.fingerprint.image
+        key = f"{action.id}@{zoom}"
+        cached = self._thumbs.get(key)
+        if cached is None or cached[0] != id(image):
+            picture = tk.PhotoImage(data=base64.b64encode(png.encode(image))).zoom(zoom)
+            cached = (id(image), picture)
+            self._thumbs[key] = cached
+        return cached[1]
+
+    def _update_preview(self):
+        if self.preview is None:
+            return
+        picture = self._picture(self.selected(), PREVIEW_ZOOM)
+        if picture is None:
+            self.preview.configure(image="", text="нет\nотпечатка", width=10, height=3)
+        else:
+            self.preview.configure(image=picture, text="", width=picture.width(), height=picture.height())
+
+    def open_fingerprint(self):
+        """Show the selected action's Slot Fingerprint big, in its own window."""
+        action = self.selected()
+        picture = self._picture(action, LARGE_ZOOM)
+        if picture is None:
+            return
+        window = tk.Toplevel(self)
+        window.title(f"Отпечаток — {action.name}")
+        window.transient(self.winfo_toplevel())
+        window.resizable(False, False)
+        big = tk.Label(window, image=picture, borderwidth=0, cursor="hand2")
+        big.pack(padx=12, pady=(12, 6))
+        big.bind("<Button-1>", lambda e: window.destroy())
+        image = action.target.fingerprint.image
+        ttk.Label(window, text=f"Точка клика {action.target.point.x}, {action.target.point.y} — в центре · "
+                               f"снимок {image.width}×{image.height} пикс., увеличен в {LARGE_ZOOM} раз",
+                  foreground="#57606a").pack(padx=12)
+        ttk.Button(window, text="Закрыть", command=window.destroy).pack(pady=(6, 12))
+        window.bind("<Escape>", lambda e: window.destroy())
 
     def _save(self):
         self.w.guard(lambda: self.w.c.save_profile(self.w.profile_name))
@@ -265,6 +366,8 @@ class CompatibilityTab(ttk.Frame):
         self.tree = _tree(self, [("device", "Устройство", 85), ("method", "Способ ввода", 220),
                                  ("mode", "Режим", 95), ("available", "Доступен", 150),
                                  ("status", "Статус", 120), ("note", "Комментарий", 330), ("source", "Источник", 95)])
+        self.tree.bind("<Double-1>", lambda e: self.comment())
+        Tooltip(self.tree, self._hover_text)
         buttons = ttk.Frame(self)
         buttons.pack(fill="x", pady=(6, 0))
         for status in (Status.WORKS, Status.PARTIAL, Status.FAILS, Status.UNTESTED):
@@ -307,14 +410,33 @@ class CompatibilityTab(ttk.Frame):
             self.w.c.compatibility.mark(self.app.get(), method_id, status, note)
             self.reload()
 
+    def _hover_text(self, event) -> str:
+        """Full description, availability and comment of the row under the cursor."""
+        method_id = self.tree.identify_row(event.y)
+        if not method_id:
+            return ""
+        method = self.w.c.methods[method_id]
+        entry = self.w.c.compatibility.entry(self.app.get(), method_id)
+        ok, why = method.available()
+        lines = [method.info.name, method.info.description]
+        if not ok:
+            lines.append(f"Недоступен: {why}")
+        lines.append(f"{self.app.get()}: {COMPAT[entry.status]}")
+        if entry.note:
+            lines.append(entry.note)
+        lines.append("Двойной щелчок — изменить комментарий")
+        return "\n".join(line for line in lines if line)
+
     def comment(self):
         method_id = self._selected()
         if not method_id:
             return
         entry = self.w.c.compatibility.entry(self.app.get(), method_id)
-        note = simpledialog.askstring("Комментарий", "Комментарий:", initialvalue=entry.note, parent=self)
-        if note is not None:
-            self.w.c.compatibility.mark(self.app.get(), method_id, entry.status, note)
+        dialog = NoteDialog(self, "Комментарий",
+                            f"{self.w.c.methods[method_id].info.name} — {self.app.get()}", entry.note)
+        self.wait_window(dialog)
+        if dialog.text is not None:
+            self.w.c.compatibility.mark(self.app.get(), method_id, entry.status, dialog.text)
             self.reload()
 
     def reset(self):
@@ -347,6 +469,80 @@ class CompatibilityTab(ttk.Frame):
                         f"Проверьте игру и отметьте результат.")
 
 
+class InfoTab(ttk.Frame):
+    """Reference: general principles of input emulation and an article for every Input Method."""
+
+    def __init__(self, parent, window: "MainWindow"):
+        super().__init__(parent, padding=6)
+        self.w = window
+        left = ttk.Frame(self)
+        left.pack(side="left", fill="y")
+        self.tree = ttk.Treeview(left, show="tree", selectmode="browse", height=24)
+        self.tree.column("#0", width=260)
+        self.tree.pack(fill="y", expand=True)
+        self.tree.insert("", "end", iid="general", text=method_docs.GENERAL_TITLE)
+        for device, title in (("mouse", "Мышь"), ("keyboard", "Клавиатура")):
+            group = self.tree.insert("", "end", iid=device, text=title, open=True)
+            for method in self.w.c.methods_for(device):
+                self.tree.insert(group, "end", iid=method.info.id, text=method.info.name)
+        self.tree.bind("<<TreeviewSelect>>", lambda e: self.show(self.tree.selection()[0]))
+
+        box = ttk.Frame(self)
+        box.pack(side="left", fill="both", expand=True, padx=(8, 0))
+        self.text = tk.Text(box, wrap="word", font=("Segoe UI", 10), padx=14, pady=10, relief="flat",
+                            background="#ffffff", cursor="arrow")
+        scroll = ttk.Scrollbar(box, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=scroll.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.text.tag_configure("h1", font=("Segoe UI", 14, "bold"), spacing3=6)
+        self.text.tag_configure("h2", font=("Segoe UI", 10, "bold"), spacing1=10, spacing3=2)
+        self.text.tag_configure("meta", foreground="#57606a")
+        self.text.tag_configure("body", spacing3=4)
+        configure_code_tag(self.text)
+        self.tree.selection_set("general")
+
+    # Windows API names in the articles are shown like code.
+    _API = re.compile(r"(?<![`\w])(WM_[A-Z]+|[A-Z]+_[A-Z_]+|mouse_event|keybd_event|"
+                      r"(?:Get|Set|Send|Post|Print|Map|Window|Client|Screen|Is|Register)[A-Z]\w*|"
+                      r"PostMessage|SendMessage|SendInput|PrintWindow|INJECTED|DirectInput|Raw Input|"
+                      r"interception\.dll)(?![`\w])")
+
+    def _write(self, parts):
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        for text, tag in parts:
+            if tag in ("body", "meta"):
+                insert_marked(self.text, self._API.sub(r"`\1`", text) + "\n", tag)
+            else:
+                self.text.insert("end", text + "\n", tag)
+        self.text.configure(state="disabled")
+
+    def show(self, item: str):
+        if item in ("mouse", "keyboard"):
+            return
+        if item == "general":
+            parts = [(method_docs.GENERAL_TITLE, "h1")]
+            for heading, body in method_docs.GENERAL:
+                parts += [(heading, "h2"), (body, "body")]
+            self._write(parts)
+            return
+        method = self.w.c.methods[item]
+        info, doc = method.info, method_docs.METHODS.get(item, {})
+        ok, why = method.available()
+        app = self.w.c.settings.compatibility_app
+        entry = self.w.c.compatibility.entry(app, item)
+        meta = (f"{'Мышь' if info.device == 'mouse' else 'Клавиатура'} · "
+                f"{'нужен фокус (окно на мгновение становится активным)' if info.needs_focus else 'работает в фоне'}"
+                f" · {'доступен' if ok else 'недоступен: ' + why}")
+        parts = [(info.name, "h1"), (meta, "meta")]
+        for heading, key in (("Как работает", "how"), ("Плюсы", "pros"), ("Минусы и особенности", "cons")):
+            if doc.get(key):
+                parts += [(heading, "h2"), (doc[key], "body")]
+        parts += [(f"{app}: {COMPAT[entry.status]}", "h2"), (entry.note or "Результатов пока нет.", "body")]
+        self._write(parts)
+
+
 class SettingsTab(ttk.Frame):
     FIELDS = [
         ("hotkey_toggle", "Старт/Стоп", str),
@@ -354,9 +550,12 @@ class SettingsTab(ttk.Frame):
         ("hotkey_bind_window", "Привязать профиль к окну под курсором", str),
         ("default_interval", "Интервал по умолчанию, сек", float),
         ("default_jitter", "Разброс по умолчанию ±, сек", float),
+        ("default_hover_delay", "Пауза после наведения перед кликом, сек", float),
+        ("default_hold", "Удержание кнопки мыши, сек", float),
         ("fingerprint_size", "Размер отпечатка ячейки, пикс.", int),
         ("fingerprint_tolerance", "Допуск цвета отпечатка (0–255)", int),
         ("fingerprint_min_similarity", "Мин. совпадение отпечатка (0–1)", float),
+        ("fingerprint_search_radius", "Радиус поиска сдвинутой ячейки, пикс.", int),
     ]
 
     def __init__(self, parent, window: "MainWindow", on_saved: Callable[[], None]):
@@ -416,34 +615,38 @@ class SettingsTab(ttk.Frame):
 
 
 class MainWindow:
-    def __init__(self, root: tk.Tk, controller, on_toggle: Callable, on_settings_saved: Callable):
+    def __init__(self, root: tk.Tk, controller, on_toggle: Callable, on_settings_saved: Callable,
+                 on_show_mini: Callable):
         self.root, self.c = root, controller
         self.profile_name: Optional[str] = None
         root.title("MyClicker")
         root.geometry("1180x640")
         root.minsize(900, 500)
 
+        self.tab_bar = TabBar(root, self.select_tab)
+        self.tab_bar.pack(fill="x")
         body = ttk.PanedWindow(root, orient="horizontal")
         body.pack(fill="both", expand=True, padx=8, pady=(8, 0))
         self.profiles = ProfilesPanel(body, self)
         body.add(self.profiles, weight=1)
-        self.tabs = ttk.Notebook(body)
-        body.add(self.tabs, weight=3)
-        self.mouse_tab = ActionsTab(self.tabs, self, "mouse")
-        self.keyboard_tab = ActionsTab(self.tabs, self, "keyboard")
-        self.compat_tab = CompatibilityTab(self.tabs, self)
-        self.settings_tab = SettingsTab(self.tabs, self, on_settings_saved)
-        self.tabs.add(self.mouse_tab, text="Мышь")
-        self.tabs.add(self.keyboard_tab, text="Клавиатура")
-        self.tabs.add(self.compat_tab, text="Способы ввода")
-        self.tabs.add(self.settings_tab, text="Настройки")
-        if not self.c.profile_names():
-            self.tabs.select(self.compat_tab)
+        self.pages = ttk.Frame(body)
+        body.add(self.pages, weight=3)
+        self.mouse_tab = ActionsTab(self.pages, self, "mouse")
+        self.keyboard_tab = ActionsTab(self.pages, self, "keyboard")
+        self.compat_tab = CompatibilityTab(self.pages, self)
+        self.settings_tab = SettingsTab(self.pages, self, on_settings_saved)
+        self.info_tab = InfoTab(self.pages, self)
+        self._tabs = {"Мышь": self.mouse_tab, "Клавиатура": self.keyboard_tab,
+                      "Способы ввода": self.compat_tab, "Настройки": self.settings_tab, "Info": self.info_tab}
+        for title in self._tabs:
+            self.tab_bar.add(title)
+        self.select_tab("Мышь" if self.c.profile_names() else "Способы ввода")
 
         bar = ttk.Frame(root, padding=8)
         bar.pack(fill="x")
         self.toggle_button = ttk.Button(bar, text="", command=on_toggle, width=26)
         self.toggle_button.pack(side="left")
+        ttk.Button(bar, text="Мини-панель", command=on_show_mini).pack(side="left", padx=(8, 0))
         self.message = ttk.Label(bar, text="")
         self.message.pack(side="left", padx=12)
 
@@ -451,6 +654,14 @@ class MainWindow:
         names = self.c.profile_names()
         if names:
             self.profiles.tree.selection_set(names[0])
+
+    def select_tab(self, title: str):
+        for name, page in self._tabs.items():
+            if name == title:
+                page.pack(fill="both", expand=True)
+            else:
+                page.pack_forget()
+        self.tab_bar.set_active(title)
 
     # ----- shared helpers -----
     def show(self, text: str, error: bool = False):

@@ -72,6 +72,14 @@ class Fingerprint:
     check: bool = True
 
 
+@dataclass(frozen=True)
+class ClickTiming:
+    """Pauses inside one Mouse Click. Games update what is under the cursor once per frame, so the
+    press must come a little after the move onto the point, and the button must stay down a moment."""
+    hover: float = 0.1   # seconds after moving onto the point, before pressing
+    hold: float = 0.06   # seconds between button down and up
+
+
 @dataclass
 class MouseTarget:
     point: Point
@@ -79,6 +87,8 @@ class MouseTarget:
     button: MouseButton = MouseButton.LEFT
     double: bool = False
     fingerprint: Optional[Fingerprint] = None
+    timing: ClickTiming = field(default_factory=ClickTiming)
+    relocate: bool = True   # if the Slot Fingerprint is not at `point`, look for it nearby and follow it
 
 
 @dataclass

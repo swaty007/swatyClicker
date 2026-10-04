@@ -6,8 +6,83 @@ from tkinter import ttk
 from typing import Optional
 
 from myclicker.domain.keys import key_by_name, key_by_vk, key_names
-from myclicker.domain.model import Action, KeyTarget, MouseTarget, Point, Schedule
+from myclicker.domain.model import Action, ClickTiming, KeyTarget, MouseTarget, Point, Schedule
 from myclicker.ui.texts import BUTTONS, BUTTONS_BY_TEXT
+
+
+class NoteDialog(tk.Toplevel):
+    """Multi-line text editor; `self.text` is the new text after Save, or None if cancelled."""
+
+    def __init__(self, parent, title: str, heading: str, text: str):
+        super().__init__(parent)
+        self.title(title)
+        self.transient(parent)
+        self.text: Optional[str] = None
+        frame = ttk.Frame(self, padding=12)
+        frame.pack(fill="both", expand=True)
+        ttk.Label(frame, text=heading, font=("Segoe UI", 10, "bold")).pack(anchor="w", pady=(0, 6))
+        box = ttk.Frame(frame)
+        box.pack(fill="both", expand=True)
+        self.editor = tk.Text(box, width=70, height=10, wrap="word", font=("Segoe UI", 10), undo=True)
+        scroll = ttk.Scrollbar(box, orient="vertical", command=self.editor.yview)
+        self.editor.configure(yscrollcommand=scroll.set)
+        self.editor.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.editor.insert("1.0", text)
+        buttons = ttk.Frame(frame)
+        buttons.pack(fill="x", pady=(10, 0))
+        ttk.Label(buttons, text="Ctrl+Enter — сохранить", foreground="#57606a").pack(side="left")
+        ttk.Button(buttons, text="Отмена", command=self.destroy).pack(side="right")
+        ttk.Button(buttons, text="Сохранить", command=self._save).pack(side="right", padx=4)
+        self.bind("<Control-Return>", lambda e: self._save())
+        self.bind("<Escape>", lambda e: self.destroy())
+        self.grab_set()
+        self.wait_visibility()
+        self.editor.focus_set()
+
+    def _save(self):
+        self.text = self.editor.get("1.0", "end-1c").strip()
+        self.destroy()
+
+
+class Tooltip:
+    """Shows the text returned by `text_for(event)` next to the cursor while hovering a widget."""
+
+    def __init__(self, widget, text_for, delay_ms: int = 400):
+        self.widget, self.text_for, self.delay = widget, text_for, delay_ms
+        self._tip = None
+        self._job = None
+        self._shown_text = None
+        widget.bind("<Motion>", self._motion, add="+")
+        widget.bind("<Leave>", lambda e: self._hide(), add="+")
+
+    def _motion(self, event):
+        text = self.text_for(event)
+        if text == self._shown_text:
+            if self._tip is not None:
+                self._tip.geometry(f"+{event.x_root + 16}+{event.y_root + 12}")
+            return
+        self._hide()
+        if text:
+            self._job = self.widget.after(self.delay, lambda: self._show(text, event.x_root, event.y_root))
+
+    def _show(self, text, x, y):
+        self._tip = tk.Toplevel(self.widget)
+        self._tip.overrideredirect(True)
+        self._tip.attributes("-topmost", True)
+        tk.Label(self._tip, text=text, justify="left", wraplength=420, bg="#fffbe6", relief="solid",
+                 borderwidth=1, padx=8, pady=6, font=("Segoe UI", 9)).pack()
+        self._tip.geometry(f"+{x + 16}+{y + 12}")
+        self._shown_text = text
+
+    def _hide(self):
+        if self._job is not None:
+            self.widget.after_cancel(self._job)
+            self._job = None
+        if self._tip is not None:
+            self._tip.destroy()
+            self._tip = None
+        self._shown_text = None
 
 
 class ActionDialog(tk.Toplevel):
@@ -60,11 +135,20 @@ class ActionDialog(tk.Toplevel):
                                             state="readonly", width=12))
             self.double = tk.BooleanVar(value=target.double)
             add("", ttk.Checkbutton(form, text="Двойной клик", variable=self.double))
+            self.hover = tk.StringVar(value=f"{target.timing.hover:g}")
+            add("Пауза после наведения, сек", ttk.Entry(form, textvariable=self.hover, width=10))
+            self.hold = tk.StringVar(value=f"{target.timing.hold:g}")
+            add("Удержание кнопки, сек", ttk.Entry(form, textvariable=self.hold, width=10))
             self.check = tk.BooleanVar(value=bool(target.fingerprint and target.fingerprint.check))
             check = ttk.Checkbutton(form, text="Проверять отпечаток ячейки перед кликом", variable=self.check)
+            self.relocate = tk.BooleanVar(value=target.relocate)
+            relocate = ttk.Checkbutton(form, text="Если ячейка сдвинулась — найти её рядом и кликать туда",
+                                       variable=self.relocate)
             if target.fingerprint is None:
                 check.state(["disabled"])
+                relocate.state(["disabled"])
             add("", check)
+            add("", relocate)
         else:
             keys = ttk.Frame(form)
             self.key = tk.StringVar(value=target.key.name)
@@ -121,7 +205,16 @@ class ActionDialog(tk.Toplevel):
                 point = Point(int(self.x.get()), int(self.y.get()))
             except ValueError:
                 return "координаты — целые числа"
+            try:
+                timing = ClickTiming(float(self.hover.get().replace(",", ".")),
+                                     float(self.hold.get().replace(",", ".")))
+            except ValueError:
+                return "паузы клика — числа, например 0.1"
+            if not (0 <= timing.hover <= 5 and 0 <= timing.hold <= 5):
+                return "паузы клика — от 0 до 5 секунд"
             target.point = point
+            target.timing = timing
+            target.relocate = self.relocate.get()
             target.button = BUTTONS_BY_TEXT[self.button.get()]
             target.double = self.double.get()
             if target.fingerprint is not None:

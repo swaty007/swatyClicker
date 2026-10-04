@@ -4,7 +4,7 @@ from __future__ import annotations
 import logging
 import queue
 import tkinter as tk
-from tkinter import ttk
+from tkinter import messagebox, ttk
 
 from myclicker.domain.keys import parse_hotkey
 from myclicker.platform_win.hotkeys import HotkeyListener
@@ -23,11 +23,12 @@ class App:
         self._events: queue.Queue[str] = queue.Queue()
         self._hotkeys = None
 
-        self.main = MainWindow(self.root, controller, on_toggle=self.toggle, on_settings_saved=self.restart_hotkeys)
-        self.root.protocol("WM_DELETE_WINDOW", self.hide_main)
+        self.main = MainWindow(self.root, controller, on_toggle=self.toggle, on_settings_saved=self.restart_hotkeys,
+                               on_show_mini=self.show_mini)
+        self.root.protocol("WM_DELETE_WINDOW", self.close_main)
         s = controller.settings
         self.mini = MiniPanel(self.root, s.mini_panel_x, s.mini_panel_y, on_toggle=self.toggle,
-                              on_open=self.show_main, on_exit=self.exit, on_moved=self._mini_moved)
+                              on_open=self.show_main, on_close=self.hide_mini, on_moved=self._mini_moved)
         self.restart_hotkeys()
         for warning in warnings:
             self.main.show(warning, error=True)
@@ -79,11 +80,22 @@ class App:
 
     # ----- commands -----
     def toggle(self):
-        self.c.toggle()
+        if self.c.toggle():
+            self.show_mini()   # the panel comes back every time clicking starts
         self.refresh()
 
-    def hide_main(self):
-        self.root.withdraw()
+    def show_mini(self):
+        self.mini.deiconify()
+        self.mini.lift()
+
+    def hide_mini(self):
+        self.mini.withdraw()
+
+    def close_main(self):
+        if self.c.running and not messagebox.askyesno(
+                "MyClicker", "Кликер работает. Остановить и закрыть программу?", parent=self.root):
+            return
+        self.exit()
 
     def show_main(self):
         self.root.deiconify()

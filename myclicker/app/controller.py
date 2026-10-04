@@ -13,7 +13,7 @@ from typing import Callable, Optional
 from myclicker.domain.compatibility import CompatibilityTable
 from myclicker.domain.engine import ActionState, ActionStatus, Engine
 from myclicker.domain.fingerprint import FingerprintMatcher
-from myclicker.domain.model import Action, Key, KeyTarget, MouseTarget, Profile, Schedule
+from myclicker.domain.model import Action, ClickTiming, Key, KeyTarget, MouseTarget, Profile, Schedule
 from myclicker.domain.research import BUILTIN_COMPATIBILITY
 from myclicker.persistence.compatibility import CompatibilityStore
 from myclicker.persistence.profiles import ProfileStore
@@ -71,17 +71,25 @@ class Controller:
                                                 CompatibilityStore(self.data_dir / "compatibility.json"))
         self.methods = {m.info.id: m for m in platform.methods}
         self.matcher = FingerprintMatcher(self.settings.fingerprint_size, self.settings.fingerprint_tolerance,
-                                          self.settings.fingerprint_min_similarity)
-        self.engine = Engine(platform.methods, platform.finder, fingerprint_matcher=self.matcher)
+                                          self.settings.fingerprint_min_similarity,
+                                          self.settings.fingerprint_search_radius)
+        self.engine = Engine(platform.methods, platform.finder, fingerprint_matcher=self.matcher,
+                             on_target_moved=self._target_moved)
         self._profiles: dict[str, Profile] = {}
         self._thread: Optional[_EngineThread] = None
         self._lock = threading.RLock()
+
+    def _target_moved(self, profile: Profile, action: Action) -> None:
+        """The engine found a slot that the program moved; remember the new point."""
+        log.info("%s / %s: slot moved to %s", profile.name, action.name, action.target.point)
+        self._store.save(profile)
 
     # ----- settings -----
     def save_settings(self) -> None:
         self.matcher.size = self.settings.fingerprint_size
         self.matcher.tolerance = self.settings.fingerprint_tolerance
         self.matcher.min_similarity = self.settings.fingerprint_min_similarity
+        self.matcher.search_radius = self.settings.fingerprint_search_radius
         self._settings_store.save(self.settings)
 
     # ----- input methods -----
@@ -179,7 +187,8 @@ class Controller:
         if bound is None:
             self.bind_window(name, window)
         target = MouseTarget(point=point, method_id=self.settings.default_mouse_method,
-                             fingerprint=self.matcher.take(window, point))
+                             fingerprint=self.matcher.take(window, point),
+                             timing=ClickTiming(self.settings.default_hover_delay, self.settings.default_hold))
         return self._new_action(self.profile(name), "Клик", target)
 
     def add_key_action(self, name: str, key: Key, method_id: Optional[str] = None) -> Action:
@@ -218,7 +227,7 @@ class Controller:
         if isinstance(target, MouseTarget):
             if method.info.device != "mouse":
                 raise ValueError("для клика нужен способ ввода мыши")
-            method.click(window, target.point, target.button, target.double)
+            method.click(window, target.point, target.button, target.double, target.timing)
         else:
             if method.info.device != "keyboard":
                 raise ValueError("для клавиши нужен способ ввода клавиатуры")

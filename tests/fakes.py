@@ -15,6 +15,9 @@ class FakeWindow:
     def is_minimized(self):
         return self.minimized
 
+    def client_size(self):
+        return (self.image.width, self.image.height) if self.image is not None else (0, 0)
+
     def capture(self, rect):
         if self.image is None:
             return None
@@ -39,12 +42,14 @@ class FakeMouse:
     def __init__(self, method_id, needs_focus=False):
         self.info = MethodInfo(id=method_id, name=method_id, device="mouse", needs_focus=needs_focus)
         self.clicks = []
+        self.timings = []
 
     def available(self):
         return True, ""
 
-    def click(self, window, point, button, double):
+    def click(self, window, point, button, double, timing):
         self.clicks.append((window, point, button, double))
+        self.timings.append(timing)
 
 
 class FakeKeyboard:

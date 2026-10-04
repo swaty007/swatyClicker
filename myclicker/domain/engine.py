@@ -47,11 +47,12 @@ class _Session:
 class Engine:
     RETRY_DELAY = 1.0
 
-    def __init__(self, methods, finder, rng=None, fingerprint_matcher=None):
+    def __init__(self, methods, finder, rng=None, fingerprint_matcher=None, on_target_moved=None):
         self._methods = {m.info.id: m for m in methods}
         self._finder = finder
         self._rng = rng or random.Random()
         self._matcher = fingerprint_matcher
+        self._on_target_moved = on_target_moved   # (profile, action) -> None, e.g. to save the new point
         self._sessions: dict[str, _Session] = {}
         self._running = False
         self._lock = threading.RLock()
@@ -113,7 +114,7 @@ class Engine:
         previous = session.statuses.get(action.id, ActionStatus())
         try:
             window = self._ready_window(session)
-            self._check_fingerprint(window, action)
+            self._check_fingerprint(window, session.profile, action)
             self._deliver(window, action)
         except _Pause as pause:
             session.statuses[action.id] = ActionStatus(ActionState.PAUSED, str(pause), previous.fired, previous.last_fired)
@@ -137,15 +138,21 @@ class Engine:
             raise _Pause("окно свёрнуто")
         return window
 
-    def _check_fingerprint(self, window, action: Action) -> None:
+    def _check_fingerprint(self, window, profile: Profile, action: Action) -> None:
         target = action.target
         if not isinstance(target, MouseTarget) or self._matcher is None:
             return
         fingerprint = target.fingerprint
         if fingerprint is None or not fingerprint.check:
             return
-        if not self._matcher.matches(window, target.point, fingerprint):
+        if self._matcher.matches(window, target.point, fingerprint):
+            return
+        moved_to = self._matcher.locate(window, target.point, fingerprint) if target.relocate else None
+        if moved_to is None:
             raise _Pause("отпечаток ячейки не совпал")
+        target.point = moved_to
+        if self._on_target_moved is not None:
+            self._on_target_moved(profile, action)
 
     def _deliver(self, window, action: Action) -> None:
         target = action.target
@@ -153,6 +160,6 @@ class Engine:
         if method is None:
             raise LookupError(f"способ ввода «{target.method_id}» не найден")
         if isinstance(target, MouseTarget):
-            method.click(window, target.point, target.button, target.double)
+            method.click(window, target.point, target.button, target.double, target.timing)
         else:
             method.press(window, target.key)

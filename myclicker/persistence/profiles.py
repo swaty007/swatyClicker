@@ -15,7 +15,7 @@ import re
 import shutil
 from pathlib import Path
 
-from myclicker.domain.model import (Action, Fingerprint, Key, KeyTarget, MouseButton, MouseTarget, Point, Profile,
+from myclicker.domain.model import (Action, ClickTiming, Fingerprint, Key, KeyTarget, MouseButton, MouseTarget, Point, Profile,
                                     Schedule)
 from myclicker.persistence import png
 
@@ -125,6 +125,9 @@ class ProfileStore:
                 "double": target.double,
                 "fingerprint_check": target.fingerprint.check if target.fingerprint else False,
                 "has_fingerprint": target.fingerprint is not None,
+                "hover": target.timing.hover,
+                "hold": target.timing.hold,
+                "relocate": target.relocate,
             }
         else:
             data["key"] = {"vk": target.key.vk, "name": target.key.name, "method": target.method_id}
@@ -141,7 +144,10 @@ class ProfileStore:
                 fingerprint = Fingerprint(png.decode(image_path.read_bytes()), check=m.get("fingerprint_check", True))
             target = MouseTarget(point=Point(int(m["x"]), int(m["y"])), method_id=m["method"],
                                  button=MouseButton(m.get("button", "left")), double=bool(m.get("double", False)),
-                                 fingerprint=fingerprint)
+                                 fingerprint=fingerprint,
+                                 timing=ClickTiming(float(m.get("hover", ClickTiming.hover)),
+                                                    float(m.get("hold", ClickTiming.hold))),
+                                 relocate=bool(m.get("relocate", True)))
         else:
             k = data["key"]
             target = KeyTarget(key=Key(int(k["vk"]), k["name"]), method_id=k["method"])

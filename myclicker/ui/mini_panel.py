@@ -8,7 +8,7 @@ BG, FG, ACCENT, STOP = "#1f2328", "#e6edf3", "#2ea043", "#da3633"
 
 
 class MiniPanel(tk.Toplevel):
-    def __init__(self, root, x: int, y: int, on_toggle: Callable, on_open: Callable, on_exit: Callable,
+    def __init__(self, root, x: int, y: int, on_toggle: Callable, on_open: Callable, on_close: Callable,
                  on_moved: Callable[[int, int], None]):
         super().__init__(root)
         self.overrideredirect(True)          # no title bar: dragged by its body instead
@@ -24,7 +24,7 @@ class MiniPanel(tk.Toplevel):
                   activebackground="#444c56").pack(side="left", padx=2, pady=4)
         self.status = tk.Label(self, text="", bg=BG, fg=FG, font=("Segoe UI", 9), anchor="w")
         self.status.pack(side="left", padx=6)
-        tk.Button(self, text="✕", width=2, command=on_exit, bg=BG, fg="#8b949e", relief="flat",
+        tk.Button(self, text="✕", width=2, command=on_close, bg=BG, fg="#8b949e", relief="flat",
                   activebackground="#30363d").pack(side="right", padx=(2, 4), pady=4)
 
         for widget in (self, self.status):

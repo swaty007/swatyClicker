@@ -16,9 +16,12 @@ class Settings:
     default_key_method: str = "key.sendinput_scan"
     default_interval: float = 5.0
     default_jitter: float = 0.5
+    default_hover_delay: float = 0.1         # pause after moving onto the point, before pressing
+    default_hold: float = 0.06               # how long the mouse button stays down
     fingerprint_size: int = 20
     fingerprint_tolerance: int = 24
     fingerprint_min_similarity: float = 0.85
+    fingerprint_search_radius: int = 150     # how far to look for a slot that moved, in pixels
     mini_panel_x: int = 8
     mini_panel_y: int = 8
     compatibility_app: str = "LU4"

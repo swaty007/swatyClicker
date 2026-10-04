@@ -2,7 +2,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from myclicker.domain.model import (Action, Fingerprint, Image, Key, KeyTarget, MouseButton, MouseTarget, Point,
+from myclicker.domain.model import (Action, ClickTiming, Fingerprint, Image, Key, KeyTarget, MouseButton, MouseTarget, Point,
                                     Profile, Schedule)
 from myclicker.persistence.profiles import ProfileStore
 
@@ -16,7 +16,8 @@ def sample_profile(name="BD фарм: 1/2"):
             Action(id="a1", name="Unstuck", schedule=Schedule(5.0, 0.5),
                    target=MouseTarget(point=Point(965, 796), method_id="mouse.postmessage",
                                       button=MouseButton.RIGHT, double=True,
-                                      fingerprint=Fingerprint(icon, check=False))),
+                                      fingerprint=Fingerprint(icon, check=False),
+                                      timing=ClickTiming(hover=0.3, hold=0.12), relocate=False)),
             Action(id="k1", name="Skill", schedule=Schedule(2.0), enabled=False,
                    target=KeyTarget(key=Key(0x7B, "F12"), method_id="key.sendinput_scan")),
         ],
