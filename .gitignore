@@ -1,0 +1,16 @@
+# portable runtime data (configs, profiles, fingerprints)
+data/
+
+# probe screenshots contain other players' names
+probe/results/
+probe/job.json
+
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# third-party driver package, kept locally only
+Interception/
+Interception.zip
