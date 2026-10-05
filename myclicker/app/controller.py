@@ -13,6 +13,7 @@ from typing import Callable, Optional
 from myclicker.domain.compatibility import CompatibilityTable
 from myclicker.domain.engine import ActionState, ActionStatus, Engine
 from myclicker.domain.fingerprint import FingerprintMatcher
+from myclicker.domain.input import deliver
 from myclicker.domain.model import Action, ClickTiming, Key, KeyTarget, MouseTarget, Profile, Schedule
 from myclicker.domain.research import BUILTIN_COMPATIBILITY
 from myclicker.persistence.compatibility import CompatibilityStore
@@ -37,6 +38,7 @@ class Summary:
     active: int          # actions delivering input
     paused: int
     errors: int
+    actions: int = 0     # enabled actions of the bound profiles
 
 
 class _EngineThread(threading.Thread):
@@ -45,19 +47,19 @@ class _EngineThread(threading.Thread):
     def __init__(self, engine: Engine, monotonic):
         super().__init__(name="engine", daemon=True)
         self._engine, self._monotonic = engine, monotonic
-        self._stop = threading.Event()
+        self._stopping = threading.Event()
 
     def run(self):
-        while not self._stop.is_set():
+        while not self._stopping.is_set():
             try:
                 self._engine.tick(self._monotonic())
             except Exception:
                 log.exception("engine tick failed")
-            self._stop.wait(self.TICK)
+            self._stopping.wait(self.TICK)
 
-    def stop(self):
-        self._stop.set()
-        self.join(2.0)
+    def request_stop(self):
+        """Ask the loop to end; a Mouse Click already in progress still finishes."""
+        self._stopping.set()
 
 
 class Controller:
@@ -222,16 +224,7 @@ class Controller:
         window = self.bound_window(name)
         if window is None:
             raise ValueError("сначала привяжите профиль к окну")
-        method = self.methods[method_id or action.target.method_id]
-        target = action.target
-        if isinstance(target, MouseTarget):
-            if method.info.device != "mouse":
-                raise ValueError("для клика нужен способ ввода мыши")
-            method.click(window, target.point, target.button, target.double, target.timing)
-        else:
-            if method.info.device != "keyboard":
-                raise ValueError("для клавиши нужен способ ввода клавиатуры")
-            method.press(window, target.key)
+        deliver(self.methods[method_id or action.target.method_id], window, action.target)
 
     # ----- running -----
     @property
@@ -247,11 +240,11 @@ class Controller:
             self._thread.start()
 
     def stop(self) -> None:
+        """Returns at once. A Mouse Click already being sent finishes; nothing else is sent after this."""
         with self._lock:
             self.engine.stop()
             if self._thread is not None:
-                self._thread.stop()
-                self._thread = None
+                self._thread.request_stop()
 
     def toggle(self) -> bool:
         if self.running:
@@ -263,22 +256,27 @@ class Controller:
     def status(self, name: str, action_id: str) -> ActionStatus:
         return self.engine.status(name, action_id)
 
-    def summary(self) -> Summary:
-        profiles = active = paused = errors = 0
-        for name in list(self._profiles):
-            if self.bound_window(name) is None:
+    def summary(self, name: Optional[str] = None) -> Summary:
+        """States of the enabled actions of every bound profile, or of the profile `name` only."""
+        names = [name] if name is not None else list(self._profiles)
+        profiles = actions = active = paused = errors = 0
+        for profile_name in names:
+            if self.bound_window(profile_name) is None:
                 continue
             profiles += 1
-            for action in self._profiles[name].actions:
+            for action in self.profile(profile_name).actions:
                 if not action.enabled:
                     continue
-                state = self.status(name, action.id).state
+                actions += 1
+                state = self.status(profile_name, action.id).state
                 active += state == ActionState.RUNNING
                 paused += state == ActionState.PAUSED
                 errors += state == ActionState.ERROR
-        return Summary(self.running, profiles, active, paused, errors)
+        return Summary(self.running, profiles, active, paused, errors, actions)
 
     def shutdown(self) -> None:
         self.stop()
+        if self._thread is not None:
+            self._thread.join(2.0)
         self.settings.last_profiles = [n for n in self._profiles if self.bound_window(n) is not None]
         self.save_settings()

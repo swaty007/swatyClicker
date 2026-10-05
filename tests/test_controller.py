@@ -1,9 +1,10 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
 from myclicker.app.controller import Controller, PlatformServices
-from myclicker.domain.model import ClickTiming, Key, MouseTarget, Point
+from myclicker.domain.model import ClickTiming, Key, Point
 from tests.fakes import FakeKeyboard, FakeMouse, FakeWindow, FakeWindowFinder, solid_image
 
 
@@ -81,6 +82,55 @@ class ControllerTest(unittest.TestCase):
 
         self.assertEqual(self.mouse.clicks, [(self.bd, Point(50, 60), action.target.button, False)])
         self.assertEqual(self.mouse.timings, [action.target.timing])
+
+    def test_stop_does_not_wait_for_a_click_in_progress(self):
+        inside, release = threading.Event(), threading.Event()
+        self.mouse.click = lambda *args: (inside.set(), release.wait(5))
+        self.controller.create_profile("BD")
+        self.controller.capture_mouse_action("BD")
+        self.controller.start()
+        self.assertTrue(inside.wait(5))
+
+        stopped = threading.Event()
+        threading.Thread(target=lambda: (self.controller.stop(), stopped.set()), daemon=True).start()
+
+        self.assertTrue(stopped.wait(0.5), "Stop waited for the click to finish")
+        release.set()
+
+    def test_start_right_after_stop_does_not_wait_for_a_click_in_progress(self):
+        inside, release = threading.Event(), threading.Event()
+        self.mouse.click = lambda *args: (inside.set(), release.wait(5))
+        self.controller.create_profile("BD")
+        self.controller.capture_mouse_action("BD")
+        self.controller.start()
+        self.assertTrue(inside.wait(5))
+        self.controller.stop()
+
+        started = threading.Event()
+        threading.Thread(target=lambda: (self.controller.start(), started.set()), daemon=True).start()
+
+        self.assertTrue(started.wait(0.5), "Start waited for the click to finish")
+        release.set()
+
+    def test_summary_of_one_profile_counts_its_enabled_actions_by_state(self):
+        self.controller.create_profile("BD")
+        clicked = self.controller.capture_mouse_action("BD")
+        self.controller.capture_mouse_action("BD").enabled = False
+        self.bd.image = solid_image(200, 200, (0, 0, 200))          # the slot no longer looks as captured
+        self.controller.add_key_action("BD", Key(0x7B, "F12"))
+        self.controller.engine.start(now=0.0)
+        self.controller.engine.tick(0.0)
+
+        summary = self.controller.summary("BD")
+
+        self.assertEqual((summary.profiles, summary.actions, summary.active, summary.paused, summary.errors),
+                         (1, 2, 1, 1, 0))
+        self.assertEqual(self.controller.status("BD", clicked.id).reason, "отпечаток ячейки не совпал")
+
+    def test_summary_of_unbound_profile_is_empty(self):
+        self.controller.create_profile("Farm")
+
+        self.assertEqual(self.controller.summary("Farm").profiles, 0)
 
     def test_profiles_are_created_with_unique_names(self):
         self.controller.create_profile("BD")

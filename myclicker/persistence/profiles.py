@@ -13,6 +13,7 @@ import json
 import os
 import re
 import shutil
+import threading
 from pathlib import Path
 
 from myclicker.domain.model import (Action, ClickTiming, Fingerprint, Key, KeyTarget, MouseButton, MouseTarget, Point, Profile,
@@ -34,8 +35,11 @@ def _write_atomic(path: Path, data: bytes) -> None:
 
 
 class ProfileStore:
+    """Safe to use from several threads: the engine saves a Profile when a slot moved, the UI on every edit."""
+
     def __init__(self, root: Path):
         self.root = Path(root)
+        self._lock = threading.RLock()   # writers share the same .tmp files
 
     # ----- queries -----
     def list_names(self) -> list[str]:
@@ -63,6 +67,10 @@ class ProfileStore:
 
     # ----- commands -----
     def save(self, profile: Profile) -> None:
+        with self._lock:
+            self._save(profile)
+
+    def _save(self, profile: Profile) -> None:
         self.root.mkdir(parents=True, exist_ok=True)
         folder = self._fingerprint_dir(profile.name)
         keep = set()
@@ -89,16 +97,18 @@ class ProfileStore:
                       json.dumps(data, ensure_ascii=False, indent=2).encode("utf-8"))
 
     def delete(self, name: str) -> None:
-        self._json_path(name).unlink(missing_ok=True)
-        shutil.rmtree(self._fingerprint_dir(name), ignore_errors=True)
+        with self._lock:
+            self._json_path(name).unlink(missing_ok=True)
+            shutil.rmtree(self._fingerprint_dir(name), ignore_errors=True)
 
     def rename(self, old: str, new: str) -> None:
-        if self.exists(new):
-            raise FileExistsError(f"профиль «{new}» уже существует")
-        profile = self.load(old)
-        profile.name = new
-        self.save(profile)
-        self.delete(old)
+        with self._lock:
+            if self.exists(new):
+                raise FileExistsError(f"профиль «{new}» уже существует")
+            profile = self.load(old)
+            profile.name = new
+            self.save(profile)
+            self.delete(old)
 
     # ----- mapping -----
     def _json_path(self, name: str) -> Path:

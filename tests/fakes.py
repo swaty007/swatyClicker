@@ -8,6 +8,7 @@ class FakeWindow:
         self.alive = alive
         self.minimized = minimized
         self.image = image  # what capture() returns for any rect
+        self.captures = 0   # how many times the window was captured (each one costs a PrintWindow)
 
     def is_alive(self):
         return self.alive
@@ -19,6 +20,7 @@ class FakeWindow:
         return (self.image.width, self.image.height) if self.image is not None else (0, 0)
 
     def capture(self, rect):
+        self.captures += 1
         if self.image is None:
             return None
         return self.image.crop(rect)

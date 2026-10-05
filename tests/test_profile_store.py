@@ -1,4 +1,5 @@
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 
@@ -73,6 +74,32 @@ class ProfileStoreTest(unittest.TestCase):
         self.store.save(profile)
 
         self.assertEqual([p for p in self.root.rglob("*.png")], [])
+
+
+class ConcurrentSaveTest(unittest.TestCase):
+    """The engine thread saves a Profile when a slot moved while the UI thread may be saving the same one."""
+
+    def test_saves_from_two_threads_do_not_fail(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            store = ProfileStore(Path(tmp) / "profiles")
+            profile = sample_profile()
+            errors = []
+
+            def save_many():
+                try:
+                    for _ in range(200):
+                        store.save(profile)
+                except OSError as error:
+                    errors.append(error)
+
+            threads = [threading.Thread(target=save_many) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+
+            self.assertEqual(errors, [])
+            self.assertEqual(store.load(profile.name).actions[0].target.point, Point(965, 796))
 
 
 if __name__ == "__main__":

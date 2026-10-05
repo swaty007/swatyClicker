@@ -94,6 +94,16 @@ class RelocateTest(unittest.TestCase):
         self.assertEqual(self.action.target.point, Point(130, 75))
         self.assertEqual(self.moved, [Point(130, 75)])
 
+    def test_status_counts_checks_and_moves_with_the_last_shift(self):
+        self.engine.tick(0.0)                                                   # in place
+        self.window.image = paint(self.background, 120, 65, 20, (0, 200, 0))
+        self.engine.tick(5.0)                                                   # moved by (+30, -25)
+        self.window.image = self.background
+        self.engine.tick(10.0)                                                  # gone
+
+        status = self.engine.status("BD", "a1")
+        self.assertEqual((status.checks, status.moves, status.last_shift), (3, 1, (30, -25)))
+
     def test_slot_gone_from_the_area_pauses(self):
         self.window.image = self.background
 
@@ -101,6 +111,26 @@ class RelocateTest(unittest.TestCase):
 
         self.assertEqual(self.mouse.clicks, [])
         self.assertEqual(self.engine.status("BD", "a1").state, ActionState.PAUSED)
+
+    def test_missing_slot_is_searched_less_and_less_often(self):
+        self.window.image = self.background
+
+        for step in range(0, 33):                     # every half second for 16 s
+            self.engine.tick(step / 2)
+
+        self.assertEqual(self.engine.status("BD", "a1").checks, 5)   # at 0, 1, 3, 7 and 15 s
+
+    def test_found_slot_resets_the_search_delay(self):
+        self.window.image = self.background
+        for now in (0.0, 1.0, 3.0):                   # two misses: the next search is 4 s later
+            self.engine.tick(now)
+        self.window.image = paint(self.background, 120, 65, 20, (0, 200, 0))
+        self.engine.tick(7.0)                         # found and clicked
+        self.window.image = self.background
+        for now in (12.0, 13.0):                      # interval 5 s, then a miss retried 1 s later
+            self.engine.tick(now)
+
+        self.assertEqual(self.engine.status("BD", "a1").checks, 6)
 
     def test_relocation_can_be_switched_off_per_action(self):
         self.action.target.relocate = False
@@ -110,6 +140,42 @@ class RelocateTest(unittest.TestCase):
 
         self.assertEqual(self.mouse.clicks, [])
         self.assertEqual(self.action.target.point, Point(100, 100))
+
+
+class SlotCheckTest(unittest.TestCase):
+    """`check` is what the engine asks before a Mouse Click: is the slot still there, or where did it go."""
+
+    def setUp(self):
+        self.matcher = FingerprintMatcher(size=20, tolerance=24, min_similarity=0.85, search_radius=60)
+        self.background = solid_image(200, 200, (30, 30, 30))
+        self.window = FakeWindow("LU4 - swatyBD", image=paint(self.background, 90, 90, 20, (0, 200, 0)))
+        self.fingerprint = self.matcher.take(self.window, Point(100, 100))
+        self.window.captures = 0
+
+    def test_slot_in_place(self):
+        check = self.matcher.check(self.window, Point(100, 100), self.fingerprint, relocate=True)
+
+        self.assertEqual((check.point, check.shift), (Point(100, 100), (0, 0)))
+
+    def test_moved_slot_is_found_with_a_single_capture(self):
+        self.window.image = paint(self.background, 120, 65, 20, (0, 200, 0))
+
+        check = self.matcher.check(self.window, Point(100, 100), self.fingerprint, relocate=True)
+
+        self.assertEqual((check.point, check.shift), (Point(130, 75), (30, -25)))
+        self.assertEqual(self.window.captures, 1)
+
+    def test_moved_slot_is_not_followed_without_relocate(self):
+        self.window.image = paint(self.background, 120, 65, 20, (0, 200, 0))
+
+        check = self.matcher.check(self.window, Point(100, 100), self.fingerprint, relocate=False)
+
+        self.assertIsNone(check.point)
+
+    def test_slot_gone(self):
+        self.window.image = self.background
+
+        self.assertIsNone(self.matcher.check(self.window, Point(100, 100), self.fingerprint, relocate=True).point)
 
 
 class TakeFingerprintTest(unittest.TestCase):

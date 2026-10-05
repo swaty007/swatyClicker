@@ -18,12 +18,17 @@ def status_text(status: ActionStatus, enabled: bool = True) -> str:
     if not enabled:
         return "выключено"
     if status.state == ActionState.RUNNING:
-        return f"▶ работает ({status.fired})"
-    if status.state == ActionState.PAUSED:
-        return f"⏸ {status.reason}"
-    if status.state == ActionState.ERROR:
-        return f"⚠ {status.reason}"
-    return "—"
+        text = f"▶ работает ({status.fired})"
+    elif status.state == ActionState.PAUSED:
+        text = f"⏸ {status.reason}"
+    elif status.state == ActionState.ERROR:
+        text = f"⚠ {status.reason}"
+    else:
+        return "—"
+    if status.moves:
+        dx, dy = status.last_shift
+        text += f" · сдвиг {status.moves}× ({dx:+d}, {dy:+d})"
+    return text
 
 
 def schedule_text(schedule) -> str:

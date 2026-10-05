@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 
-from myclicker.domain.model import ClickTiming, Key, MethodInfo, MouseButton, Point
+from myclicker.domain.model import ClickTiming, Key, MethodInfo, MouseButton, MouseTarget, Point
 
 
 class InputMethod(ABC):
@@ -26,3 +26,15 @@ class KeyboardInputMethod(InputMethod):
     @abstractmethod
     def press(self, window, key: Key) -> None:
         """Deliver one Key Press (down + up) of `key` to `window`."""
+
+
+def deliver(method: InputMethod, window, target) -> None:
+    """Send `target`'s Mouse Click or Key Press to `window` through `method`."""
+    if isinstance(target, MouseTarget):
+        if method.info.device != "mouse":
+            raise ValueError("для клика нужен способ ввода мыши")
+        method.click(window, target.point, target.button, target.double, target.timing)
+    else:
+        if method.info.device != "keyboard":
+            raise ValueError("для клавиши нужен способ ввода клавиатуры")
+        method.press(window, target.key)

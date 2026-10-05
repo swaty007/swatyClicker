@@ -19,6 +19,7 @@ class App:
     def __init__(self, controller, warnings: list[str] = ()):
         self.c = controller
         self.root = tk.Tk()
+        self.root.report_callback_exception = self._callback_failed
         ttk.Style(self.root).theme_use("vista" if "vista" in ttk.Style().theme_names() else "clam")
         self._events: queue.Queue[str] = queue.Queue()
         self._hotkeys = None
@@ -72,6 +73,12 @@ class App:
                 self._report(f"Профиль «{profile}» привязан к окну «{window.title}».")
         except (ValueError, OSError) as error:
             self._report(str(error), error=True)
+
+    def _callback_failed(self, kind, error, traceback):
+        """A button or event handler raised: log it and say so instead of failing silently."""
+        log.error("UI callback failed", exc_info=(kind, error, traceback))
+        if hasattr(self, "main"):
+            self.main.show(f"Ошибка: {error or kind.__name__} (подробности в data/myclicker.log)", error=True)
 
     def _report(self, text: str, error: bool = False):
         self.main.show(text, error)

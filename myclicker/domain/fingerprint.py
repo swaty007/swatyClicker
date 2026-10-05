@@ -2,52 +2,34 @@
 and find the slot again nearby when the program moved its window."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Optional
 
 from myclicker.domain.model import Fingerprint, Image, Point, Rect
+from myclicker.domain.pixels import half, nearest_offsets, similarity
+
+__all__ = ["FingerprintMatcher", "SlotCheck", "similarity"]
 
 
-def similarity(a: Image, b: Image, tolerance: int) -> float:
-    """Share of pixels whose B, G and R channels all differ by at most `tolerance` (0..1)."""
-    if (a.width, a.height) != (b.width, b.height):
-        return 0.0
-    pa, pb = a.bgra, b.bgra
-    total = a.width * a.height
-    if total == 0:
-        return 0.0
-    close = 0
-    for i in range(0, total * 4, 4):
-        if (abs(pa[i] - pb[i]) <= tolerance and abs(pa[i + 1] - pb[i + 1]) <= tolerance
-                and abs(pa[i + 2] - pb[i + 2]) <= tolerance):
-            close += 1
-    return close / total
+@dataclass(frozen=True)
+class SlotCheck:
+    """Outcome of checking a Slot Fingerprint: where the slot is now (None: not there) and where it was."""
+    point: Optional[Point]
+    was: Point
 
+    @property
+    def shift(self) -> Optional[tuple[int, int]]:
+        if self.point is None:
+            return None
+        return self.point.x - self.was.x, self.point.y - self.was.y
 
-def _half(image: Image) -> Image:
-    """Half-size copy: every 2x2 block averaged. A one-pixel shift barely changes it."""
-    w, h, p = image.width // 2, image.height // 2, image.bgra
-    stride = image.width * 4
-    out = bytearray(w * h * 4)
-    for y in range(h):
-        row = 2 * y * stride
-        for x in range(w):
-            i = row + 8 * x
-            k = (y * w + x) * 4
-            for c in range(3):
-                out[k + c] = (p[i + c] + p[i + 4 + c] + p[i + stride + c] + p[i + stride + 4 + c]) // 4
-            out[k + 3] = 255
-    return Image(w, h, bytes(out))
-
-
-def _sample_offsets(image: Image, count: int = 5) -> list[tuple[int, int]]:
-    """Byte offsets of a count x count grid of pixels used for the quick first pass of the search."""
-    xs = [round(i * (image.width - 1) / (count - 1)) for i in range(count)]
-    ys = [round(i * (image.height - 1) / (count - 1)) for i in range(count)]
-    return [(y, x) for y in ys for x in xs]
+    @property
+    def moved(self) -> bool:
+        return self.point is not None and self.point != self.was
 
 
 class FingerprintMatcher:
-    MAX_CANDIDATES = 30   # coarse-pass positions examined pixel by pixel when searching for a moved slot
+    MAX_CANDIDATES = 10   # distinct coarse-pass places examined pixel by pixel when searching for a moved slot
 
     def __init__(self, size: int = 20, tolerance: int = 24, min_similarity: float = 0.85,
                  search_radius: int = 150):
@@ -65,56 +47,60 @@ class FingerprintMatcher:
         image = window.capture(self._rect(point))
         return Fingerprint(image) if image is not None else None
 
-    def matches(self, window, point: Point, fingerprint: Fingerprint) -> bool:
-        current = window.capture(self._rect(point, fingerprint.image))
-        if current is None:
-            return False
-        return similarity(current, fingerprint.image, self.tolerance) >= self.min_similarity
-
-    def locate(self, window, point: Point, fingerprint: Fingerprint) -> Optional[Point]:
-        """Where the slot is now, searching `search_radius` pixels around `point`; None if not found."""
+    def check(self, window, point: Point, fingerprint: Fingerprint, relocate: bool) -> SlotCheck:
+        """Is the slot still at `point`; with `relocate`, where within `search_radius` it is now.
+        Costs one capture of the window either way."""
         icon = fingerprint.image
-        width, height = window.client_size()
-        left = max(0, point.x - icon.width // 2 - self.search_radius)
-        top = max(0, point.y - icon.height // 2 - self.search_radius)
-        right = min(width, point.x - icon.width // 2 + icon.width + self.search_radius)
-        bottom = min(height, point.y - icon.height // 2 + icon.height + self.search_radius)
-        if right - left < icon.width or bottom - top < icon.height:
-            return None
-        area = window.capture(Rect(left, top, right - left, bottom - top))
+        home = self._rect(point, icon)
+        if not relocate:
+            current = window.capture(home)
+            here = current is not None and similarity(current, icon, self.tolerance) >= self.min_similarity
+            return SlotCheck(point if here else None, point)
+        bounds = self._search_rect(window, home)
+        area = window.capture(bounds) if bounds is not None else None
         if area is None:
-            return None
+            return SlotCheck(None, point)
+        current = area.crop(Rect(home.x - bounds.x, home.y - bounds.y, icon.width, icon.height))
+        if current is not None and similarity(current, icon, self.tolerance) >= self.min_similarity:
+            return SlotCheck(point, point)
+        found = self._search(area, icon)
+        if found is None:
+            return SlotCheck(None, point)
+        return SlotCheck(Point(bounds.x + found[0] + icon.width // 2, bounds.y + found[1] + icon.height // 2), point)
 
-        # Coarse pass on half-size copies (robust to one-pixel offsets), ranked by colour difference.
-        small_area, small_icon = _half(area), _half(icon)
+    def _search_rect(self, window, home: Rect) -> Optional[Rect]:
+        """`home` grown by `search_radius` on every side, clipped to the client area."""
+        width, height = window.client_size()
+        left, top = max(0, home.x - self.search_radius), max(0, home.y - self.search_radius)
+        right = min(width, home.x + home.width + self.search_radius)
+        bottom = min(height, home.y + home.height + self.search_radius)
+        if right - left < home.width or bottom - top < home.height:
+            return None
+        return Rect(left, top, right - left, bottom - top)
+
+    def _search(self, area: Image, icon: Image) -> Optional[tuple[int, int]]:
+        """Top-left offset in `area` where `icon` is, or None.
+
+        Coarse pass: every offset of the half-size icon in the half-size area, ranked by colour difference
+        (half size is robust to one-pixel offsets and four times cheaper). Fine pass: full resolution,
+        two pixels around each of the best MAX_CANDIDATES coarse offsets, scored by `similarity`."""
+        small_area, small_icon = half(area), half(icon)
         if small_icon.width == 0 or small_icon.height == 0:
             return None
-        samples = _sample_offsets(small_icon)
-        pa, pi, aw, iw, tol = small_area.bgra, small_icon.bgra, small_area.width, small_icon.width, self.tolerance
-        candidates = []
-        for oy in range(0, small_area.height - small_icon.height + 1):
-            for ox in range(0, small_area.width - small_icon.width + 1):
-                diff = 0
-                for y, x in samples:
-                    i, j = ((oy + y) * aw + ox + x) * 4, (y * iw + x) * 4
-                    diff += abs(pa[i] - pi[j]) + abs(pa[i + 1] - pi[j + 1]) + abs(pa[i + 2] - pi[j + 2])
-                candidates.append((diff, 2 * ox, 2 * oy))
-        candidates.sort()                                             # most similar colours first
-
-        # Fine pass at full resolution around the best coarse hits.
         best_score, best = 0.0, None
         checked = set()
-        for _, cx, cy in candidates[:self.MAX_CANDIDATES]:
+        for sx, sy in nearest_offsets(small_area, small_icon, self.MAX_CANDIDATES, spacing=2):
             if best_score >= 0.98:
                 break
+            cx, cy = 2 * sx, 2 * sy
             for oy in range(max(0, cy - 2), min(area.height - icon.height, cy + 2) + 1):
                 for ox in range(max(0, cx - 2), min(area.width - icon.width, cx + 2) + 1):
                     if (ox, oy) in checked:
                         continue
                     checked.add((ox, oy))
-                    score = similarity(area.crop(Rect(ox, oy, icon.width, icon.height)), icon, tol)
+                    score = similarity(area.crop(Rect(ox, oy, icon.width, icon.height)), icon, self.tolerance)
                     if score > best_score:
                         best_score, best = score, (ox, oy)
         if best is None or best_score < self.min_similarity:
             return None
-        return Point(left + best[0] + icon.width // 2, top + best[1] + icon.height // 2)
+        return best
